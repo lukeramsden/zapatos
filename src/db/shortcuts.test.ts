@@ -8,6 +8,12 @@ import {
   insert,
   select,
   selectOne,
+  selectExactlyOne,
+  truncate,
+  sum,
+  avg,
+  min,
+  max,
   update,
   upsert
 } from './shortcuts';
@@ -434,6 +440,194 @@ describe('shortcuts.ts query builders', () => {
           ],
         }
       `);
+    });
+  });
+
+  describe('additional shortcuts edge cases', () => {
+    test('insert supports extras and mixed Default in array', () => {
+      const query = insert(usersTable, [
+        { id: 1, name: 'Alice', created_at: Default },
+        { id: 2, name: 'Bob', created_at: raw('now()') }
+      ]);
+      const compiled = query.compile();
+      expect(compiled).toMatchInlineSnapshot(`
+        {
+          "text": "INSERT INTO "users" ("created_at", "id", "name") VALUES (DEFAULT, $1, $2), ($3, $4, $5) RETURNING to_jsonb("users".*) AS result",
+          "values": [
+            1,
+            "Alice",
+            DangerousRawString {
+              "value": "now()",
+            },
+            2,
+            "Bob",
+          ],
+        }
+      `);
+    });
+    test('update supports returning specific columns and extras', () => {
+      const query = update(usersTable, { active: false }, { id: 3 }, {
+        returning: ['id'] as any,
+        extras: { name: sql`upper(name)` }
+      });
+      const compiled = query.compile();
+      expect(compiled).toMatchInlineSnapshot(`
+        {
+          "text": "UPDATE "users" SET ("active") = ROW($1) WHERE ("id" = $2) RETURNING jsonb_build_object($3::text, "id") || jsonb_build_object($4::text, upper(name)) AS result",
+          "values": [
+            false,
+            3,
+            "id",
+            "name",
+          ],
+        }
+      `);
+    });
+    test('deletes supports returning specific columns and fragment where', () => {
+      const query = deletes(usersTable, sql`id > ${raw('10')}`, {
+        returning: ['id', 'active'] as any
+      });
+      const compiled = query.compile();
+      expect(compiled).toMatchInlineSnapshot(`
+        {
+          "text": "DELETE FROM "users" WHERE id > 10 RETURNING jsonb_build_object($1::text, "id", $2::text, "active") AS result",
+          "values": [
+            "id",
+            "active",
+          ],
+        }
+      `);
+    });
+    test('upsert empty array produces noop insert', () => {
+      const query = upsert(usersTable, [], 'email' as any);
+      const compiled = query.compile();
+      expect(query.noop).toBe(true);
+      expect(compiled).toMatchInlineSnapshot(`
+        {
+          "text": "/* marked no-op: won't hit DB unless forced -> */ INSERT INTO "users" SELECT null WHERE false",
+          "values": [],
+        }
+      `);
+    });
+    test('upsert supports reportAction suppress', () => {
+      const query = upsert(usersTable, { email: 'x', name: 'X' }, 'email' as any, { reportAction: 'suppress' });
+      const compiled = query.compile();
+      expect(compiled.text).not.toContain('$action');
+    });
+    test('upsert supports noNullUpdateColumns for specific columns', () => {
+      const query = upsert(usersTable, { a: 1, b: null }, 'a' as any, { noNullUpdateColumns: ['b'] as any });
+      const text = query.compile().text;
+      expect(text).toContain('CASE WHEN EXCLUDED."b" IS NULL THEN "users"."b" ELSE EXCLUDED."b" END');
+    });
+    test('upsert deduplicates updateColumns and updateValues', () => {
+      const query = upsert(usersTable, { a: 1, b: 2 }, 'a' as any, {
+        updateColumns: ['a'] as any,
+        updateValues: { b: sql`users.b + 10` }
+      });
+      const compiled = query.compile();
+      expect(compiled.text).toContain('("a", "b")');
+      expect(compiled.text).toContain('ROW(EXCLUDED."a", users.b + 10)');
+    });
+    describe('truncate', () => {
+      test('truncates single table without options', () => {
+        const query = truncate(usersTable);
+        const compiled = query.compile();
+        expect(compiled.text).toBe('TRUNCATE "users"');
+      });
+      test('truncates multiple tables with restart identity and cascade', () => {
+        const query = truncate([usersTable, 'orders' as any], 'RESTART IDENTITY', 'CASCADE');
+        const compiled = query.compile();
+        expect(compiled.text).toBe('TRUNCATE "users", "orders" RESTART IDENTITY CASCADE');
+      });
+    });
+    describe('select advanced', () => {
+      test('distinct on specific columns', () => {
+        const query = select(usersTable, {}, { distinct: ['id', 'name'] as any });
+        const text = query.compile().text;
+        expect(text).toContain('SELECT DISTINCT ON ("id", "name")');
+      });
+      test('order by array with nulls', () => {
+        const query = select(usersTable, {}, {
+          order: [
+            { by: sql`created_at`, direction: 'ASC', nulls: 'LAST' },
+            { by: sql`id`, direction: 'DESC' }
+          ]
+        });
+        const text = query.compile().text;
+        expect(text).toContain('ORDER BY created_at ASC NULLS LAST, id DESC');
+      });
+      test('groupBy and having', () => {
+        const query = select(usersTable, {}, {
+          groupBy: ['active'] as any,
+          having: sql`count("active") > ${raw('1')}`
+        });
+        const text = query.compile().text;
+        expect(text).toContain('GROUP BY "active"');
+        expect(text).toContain('HAVING count("active") > 1');
+      });
+      test('limit with ties', () => {
+        const query = select(usersTable, {}, { limit: 5, withTies: true });
+        const text = query.compile().text;
+        expect(text).toContain('FETCH FIRST $1 ROWS WITH TIES');
+      });
+      test('lock options multiple', () => {
+        const query = select(usersTable, {}, {
+          lock: [
+            { for: 'UPDATE' },
+            { for: 'KEY SHARE', wait: 'SKIP LOCKED' }
+          ]
+        });
+        const text = query.compile().text;
+        expect(text).toContain('FOR UPDATE');
+        expect(text).toContain('FOR KEY SHARE SKIP LOCKED');
+      });
+    });
+    test('selectOne without results returns undefined', () => {
+      const q = selectOne(usersTable, { id: 999 });
+      const transformed = q.runResultTransform({ rows: [], command: '', rowCount: 0, oid: 0, fields: [] } as any);
+      expect(transformed).toBeUndefined();
+    });
+    test.fails('selectExactlyOne throws when zero or multiple rows', () => {
+      const q = selectExactlyOne(usersTable, {} as any);
+      expect(() => q.runResultTransform({ rows: [], command: '', rowCount: 0, oid: 0, fields: [] } as any)).toThrow();
+      expect(() => q.runResultTransform({ rows: [{ result: 1 }, { result: 2 }], command: '', rowCount: 2, oid: 0, fields: [] } as any)).toThrow();
+    });
+    test.fails('selectExactlyOne in lateral throws when zero rows returned', () => {
+      const q = select(usersTable, {}, {
+        lateral: { nested: selectExactlyOne(usersTable, { id: 999 }) }
+      });
+      const mockResult = {
+        rows: [
+          { result: [{ id: 1, name: 'John', nested: null }] }
+        ],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      } as any;
+      expect(() => q.runResultTransform(mockResult)).toThrow();
+    });
+    describe('numeric aggregates', () => {
+      test('sum compiles and transforms to number', () => {
+        const q = sum(usersTable, {} as any);
+        const c = q.compile();
+        expect(c.text).toContain('sum("users".*)');
+        const transformed = q.runResultTransform({ rows: [{ result: '10' }], command: '', rowCount: 1, oid: 0, fields: [] } as any);
+        expect(typeof transformed).toBe('number');
+        expect(transformed).toBe(10);
+      });
+      test('avg compiles', () => {
+        const q = avg(usersTable, {} as any);
+        expect(q.compile().text).toContain('avg("users".*)');
+      });
+      test('min compiles', () => {
+        const q = min(usersTable, {} as any);
+        expect(q.compile().text).toContain('min("users".*)');
+      });
+      test('max compiles', () => {
+        const q = max(usersTable, {} as any);
+        expect(q.compile().text).toContain('max("users".*)');
+      });
     });
   });
 });
