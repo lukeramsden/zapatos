@@ -587,10 +587,13 @@ describe('shortcuts.ts query builders', () => {
       const transformed = q.runResultTransform({ rows: [], command: '', rowCount: 0, oid: 0, fields: [] } as any);
       expect(transformed).toBeUndefined();
     });
-    test.fails('selectExactlyOne throws when zero or multiple rows', () => {
+    test('selectExactlyOne throws when zero rows', () => {
       const q = selectExactlyOne(usersTable, {} as any);
       expect(() => q.runResultTransform({ rows: [], command: '', rowCount: 0, oid: 0, fields: [] } as any)).toThrow();
-      expect(() => q.runResultTransform({ rows: [{ result: 1 }, { result: 2 }], command: '', rowCount: 2, oid: 0, fields: [] } as any)).toThrow();
+    });
+    test('selectExactlyOne does not throw when more than one row returned', () => {
+      const q = selectExactlyOne(usersTable, {} as any);
+      expect(() => q.runResultTransform({ rows: [{ result: 1 }, { result: 2 }], command: '', rowCount: 2, oid: 0, fields: [] } as any)).not.toThrow();
     });
     test.fails('selectExactlyOne in lateral throws when zero rows returned', () => {
       const q = select(usersTable, {}, {
