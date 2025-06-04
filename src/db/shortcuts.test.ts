@@ -595,7 +595,7 @@ describe('shortcuts.ts query builders', () => {
       const q = selectExactlyOne(usersTable, {} as any);
       expect(() => q.runResultTransform({ rows: [{ result: 1 }, { result: 2 }], command: '', rowCount: 2, oid: 0, fields: [] } as any)).not.toThrow();
     });
-    test.fails('selectExactlyOne in lateral throws when zero rows returned', () => {
+    test('selectExactlyOne in lateral throws when zero rows returned', () => {
       const q = select(usersTable, {}, {
         lateral: { nested: selectExactlyOne(usersTable, { id: 999 }) }
       });
@@ -608,6 +608,79 @@ describe('shortcuts.ts query builders', () => {
         oid: 0,
         fields: []
       } as any;
+      expect(() => q.runResultTransform(mockResult)).toThrow();
+    });
+    test('selectExactlyOne in lateral returns value without error when present', () => {
+      const q = select(usersTable, {}, {
+        lateral: { nested: selectExactlyOne(usersTable, { id: 1 }) }
+      });
+      const mockResult = {
+        rows: [
+          { result: [{ id: 1, name: 'John', nested: { id: 1 } }] }
+        ],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      } as any;
+
+      expect(() => q.runResultTransform(mockResult)).not.toThrow();
+      const transformed = q.runResultTransform(mockResult);
+      expect(transformed[0].nested).toEqual({ id: 1 });
+    });
+    test('selectExactlyOne passthrough lateral throws on null', () => {
+      const q = select(usersTable, {}, {
+        lateral: selectExactlyOne(usersTable, { id: 999 })
+      });
+      const mockResult = {
+        rows: [
+          { result: [null] }
+        ],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      } as any;
+
+      expect(() => q.runResultTransform(mockResult)).toThrow();
+    });
+    test('selectExactlyOne passthrough lateral returns values when present', () => {
+      const q = select(usersTable, {}, {
+        lateral: selectExactlyOne(usersTable, { id: 1 })
+      });
+      const mockResult = {
+        rows: [
+          { result: [{ id: 1 }] }
+        ],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      } as any;
+
+      expect(() => q.runResultTransform(mockResult)).not.toThrow();
+      const transformed = q.runResultTransform(mockResult);
+      expect(transformed[0]).toEqual({ id: 1 });
+    });
+    test('selectExactlyOne in lateral throws when any row has null nested result', () => {
+      const q = select(usersTable, {}, {
+        lateral: { nested: selectExactlyOne(usersTable, { id: 999 }) }
+      });
+      const mockResult = {
+        rows: [
+          {
+            result: [
+              { id: 1, nested: { id: 10 } },
+              { id: 2, nested: null }
+            ]
+          }
+        ],
+        command: 'SELECT',
+        rowCount: 1,
+        oid: 0,
+        fields: []
+      } as any;
+
       expect(() => q.runResultTransform(mockResult)).toThrow();
     });
     describe('numeric aggregates', () => {
